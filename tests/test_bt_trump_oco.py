@@ -1,14 +1,15 @@
 import subprocess
 from pathlib import Path
+import sys
 
 import pandas as pd
 
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from backtest.bt_trump_oco import calc_x_bp, simulate_trades
 
-def test_alignment_and_output():
-    out_path = Path("reports/test_output.parquet")
-    if out_path.exists():
-        out_path.unlink()
 
+def test_cli_runs_end_to_end(tmp_path):
+    out_path = tmp_path / "trades.csv"
     cmd = [
         "python",
         "backtest/bt_trump_oco.py",
@@ -23,18 +24,26 @@ def test_alignment_and_output():
         "--out",
         str(out_path),
     ]
-    subprocess.run(cmd, check=True)
-    assert out_path.exists(), "Output parquet was not created"
+    proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    assert "pnl" in proc.stdout
+    df = pd.read_csv(out_path)
+    assert "pnl_bp" in df.columns
 
-    df = pd.read_parquet(out_path)
-    # ensure timestamps are aligned to the second
-    timestamps = pd.to_datetime(df["timestamp"])
-    assert (timestamps == timestamps.dt.floor("1s")).all()
 
-    # check edge at window boundary
-    pre = df.loc[df["timestamp"] == pd.Timestamp("2020-01-01T00:00:59Z")]
-    boundary = df.loc[df["timestamp"] == pd.Timestamp("2020-01-01T00:01:00Z")]
-    assert int(pre["post_count"].iloc[0]) == 1
-    assert int(boundary["post_count"].iloc[0]) == 1
+def test_calc_x_bp():
+    assert calc_x_bp(0) == 2
+    assert calc_x_bp(4) == 2
+    assert calc_x_bp(10) == 5
+    assert calc_x_bp(40) == 8
 
-    out_path.unlink()
+
+def test_time_stop():
+    posts = pd.DataFrame({"timestamp": ["2020-01-01T00:00:00Z"], "text": ["post"]})
+    times = pd.date_range("2020-01-01T00:00:00Z", periods=200, freq="1s")
+    prices = [100] + [100.03] * 199
+    book = pd.DataFrame({"timestamp": times, "price": prices})
+    trades = simulate_trades(posts, book, {}, 0)
+    assert trades, "no trade generated"
+    trade = trades[0]
+    assert trade.exit_reason == "time"
+    assert (trade.exit_time - trade.entry_time) >= pd.Timedelta(seconds=180)
